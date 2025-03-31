@@ -40,50 +40,34 @@ const server = http.createServer(async (req, res) => {
 
     const imagePath = path.join(CACHE_DIR, `${statusCode}.jpg`);
 
-    switch (method) {
-        case 'GET':
+    if (method === 'GET') {
+        try {
+            // Перевіряємо наявність зображення в кеші
+            const image = await fs.readFile(imagePath);
+            res.writeHead(200, { 'Content-Type': 'image/jpeg' });
+            res.end(image);
+        } catch (error) {
+            // Якщо зображення відсутнє в кеші, отримуємо його з http.cat
             try {
-                const image = await fs.readFile(imagePath);
+                const response = await superagent.get(`https://http.cat/${statusCode}`);
+                const imageBuffer = response.body;
+
+                // Зберігаємо зображення в кеші
+                await fs.writeFile(imagePath, imageBuffer);
+
                 res.writeHead(200, { 'Content-Type': 'image/jpeg' });
-                res.end(image);
-            } catch (error) {
+                res.end(imageBuffer);
+            } catch (fetchError) {
                 res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-                res.end('Зображення не знайдено.');
+                res.end('Зображення не знайдено на сервері http.cat.');
             }
-            break;
-
-        case 'PUT':
-            let imageData = [];
-            req.on('data', (chunk) => {
-                imageData.push(chunk);
-            }).on('end', async () => {
-                try {
-                    await fs.writeFile(imagePath, Buffer.concat(imageData));
-                    res.writeHead(201, { 'Content-Type': 'text/plain; charset=utf-8' });
-                    res.end('Зображення збережено.');
-                } catch (error) {
-                    res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
-                    res.end('Помилка при збереженні зображення.');
-                }
-            });
-            break;
-
-        case 'DELETE':
-            try {
-                await fs.unlink(imagePath);
-                res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-                res.end('Зображення видалено.');
-            } catch (error) {
-                res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-                res.end('Зображення для видалення не знайдено.');
-            }
-            break;
-
-        default:
-            res.writeHead(405, { 'Content-Type': 'text/plain; charset=utf-8' });
-            res.end('Метод не дозволений.');
+        }
+    } else {
+        res.writeHead(405, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Метод не дозволений.');
     }
 });
+
 
 // Запуск сервера
 server.listen(PORT, HOST, () => {
