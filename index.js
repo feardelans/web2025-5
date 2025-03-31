@@ -1,75 +1,91 @@
-const http = require('http');
-const fs = require('fs/promises');
-const path = require('path');
-const { program } = require('commander');
+const http = require("http");
+const { Command } = require("commander");
+const fs = require("fs");
+const path = require("path");
+const superagent = require("superagent");
 
-// Налаштування командного рядка для отримання параметрів
+const program = new Command();
+
 program
-    .requiredOption('-h, --host <type>', 'Адреса сервера')
-    .requiredOption('-p, --port <number>', 'Порт сервера')
-    .requiredOption('-c, --cache <path>', 'Шлях до директорії кешу');
+    .requiredOption("-h, --host <host>", "Server host")
+    .requiredOption("-p, --port <port>", "Server port")
+    .requiredOption("-c, --cache <cacheDir>", "Cache directory");
 
 program.parse(process.argv);
 
 const options = program.opts();
-const HOST = options.host;
-const PORT = parseInt(options.port, 10);
-const CACHE_DIR = path.resolve(options.cache);
+const { host, port, cache } = options;
 
-// Перевірка наявності директорії кешу
-fs.mkdir(CACHE_DIR, { recursive: true })
-    .then(() => {
-        console.log(`Директорія кешу '${CACHE_DIR}' готова.`);
-    })
-    .catch((err) => {
-        console.error(`Помилка при створенні директорії кешу: ${err.message}`);
-        process.exit(1);
-    });
+// Перевірка чи існує директорія кешу, якщо ні - створити
+if (!fs.existsSync(cache)) {
+    fs.mkdirSync(cache, { recursive: true });
+}
 
-// Створення HTTP-сервера
+const { promises: fsPromises } = require("fs");
+
 const server = http.createServer(async (req, res) => {
-    const method = req.method;
-    const urlParts = req.url.split('/');
-    const statusCode = urlParts[1];
+    const urlParts = req.url.split("/");
 
-    if (!statusCode) {
-        res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('Не вказано код статусу в URL.');
+    // Перевірка на правильний формат запиту
+    if (urlParts.length < 2 || isNaN(urlParts[1])) {
+        res.writeHead(400, { "Content-Type": "text/plain" });
+        res.end("Invalid request");
         return;
     }
 
-    const imagePath = path.join(CACHE_DIR, `${statusCode}.jpg`);
+    const statusCode = urlParts[1];
+    const filePath = path.join(cache, `${statusCode}.jpg`);
 
-    if (method === 'GET') {
-        try {
-            // Перевіряємо наявність зображення в кеші
-            const image = await fs.readFile(imagePath);
-            res.writeHead(200, { 'Content-Type': 'image/jpeg' });
-            res.end(image);
-        } catch (error) {
-            // Якщо зображення відсутнє в кеші, отримуємо його з http.cat
+    // Обробка запитів GET, PUT, DELETE
+    try {
+        if (req.method === "GET") {
             try {
-                const response = await superagent.get(`https://http.cat/${statusCode}`);
-                const imageBuffer = response.body;
-
-                // Зберігаємо зображення в кеші
-                await fs.writeFile(imagePath, imageBuffer);
-
-                res.writeHead(200, { 'Content-Type': 'image/jpeg' });
-                res.end(imageBuffer);
-            } catch (fetchError) {
-                res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-                res.end('Зображення не знайдено на сервері http.cat.');
+                const fileData = await fsPromises.readFile(filePath);
+                res.writeHead(200, { "Content-Type": "image/jpeg" });
+                res.end(fileData);
+            } catch (err) {
+                // Якщо файл не знайдено в кеші, завантажуємо з http.cat
+                await fetchAndCacheImage(statusCode, filePath, res);
             }
+        } else if (req.method === "PUT") {
+            const fileStream = fs.createWriteStream(filePath);
+            req.pipe(fileStream);
+            req.on("finish", () => {
+                res.writeHead(201, { "Content-Type": "text/plain" });
+                res.end("File saved");
+            });
+        } else if (req.method === "DELETE") {
+            try {
+                await fsPromises.unlink(filePath);
+                res.writeHead(200, { "Content-Type": "text/plain" });
+                res.end("File deleted");
+            } catch (err) {
+                res.writeHead(404, { "Content-Type": "text/plain" });
+                res.end("File not found");
+            }
+        } else {
+            res.writeHead(405, { "Content-Type": "text/plain" });
+            res.end("Method not allowed");
         }
-    } else {
-        res.writeHead(405, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('Метод не дозволений.');
+    } catch (err) {
+        res.writeHead(500, { "Content-Type": "text/plain" });
+        res.end("Server error");
     }
 });
 
+// Функція для завантаження та кешування картинки з http.cat
+async function fetchAndCacheImage(statusCode, filePath, res) {
+    try {
+        const response = await superagent.get(`https://http.cat/${statusCode}`);
+        await fsPromises.writeFile(filePath, response.body);
+        res.writeHead(200, { "Content-Type": "image/jpeg" });
+        res.end(response.body);
+    } catch {
+        res.writeHead(404, { "Content-Type": "text/plain" });
+        res.end("Image not found on http.cat");
+    }
+}
 
-// Запуск сервера
-server.listen(PORT, HOST, () => {
-    console.log(`Сервер запущено на http://${HOST}:${PORT}/`);
+server.listen(port, host, () => {
+    console.log(`Сервер запущено на http://${host}:${port}`);
 });
